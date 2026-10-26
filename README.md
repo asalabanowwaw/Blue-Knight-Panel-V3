@@ -86,3 +86,31 @@ If the public domain returns HTTP 451 with "This application has been deactivate
 References: [Clever Cloud request routing](https://www.clever.cloud/developers/doc/find-help/faq/) and [injected environment variables](https://www.clever.cloud/developers/doc/develop/common-configuration/environment-variables/reference/).
 
 Run regression tests with `npm test`.
+
+
+## Deploy behind any HTTP/TLS frontend
+
+The listening port and the public client endpoint are independent. For any host, container platform, CDN, or reverse proxy that supports WebSocket forwarding, set:
+
+```dotenv
+PORT=8080
+PUBLIC_URL=https://proxy.example.com
+```
+
+`PORT` is where Node listens internally. `PUBLIC_URL` is the externally reachable origin; it sets the client hostname, TLS mode, and external port. Use `https://proxy.example.com:8443` for a nonstandard public TLS port, or `http://proxy.example.com:9000` for a plain HTTP frontend. Do not include a path, query, credentials or fragment in `PUBLIC_URL`. TLS is terminated by the frontend, which forwards plain HTTP/WebSocket traffic to Node.
+
+For direct VPS hosting, leave `PUBLIC_URL` unset and use `DOMAIN` plus `PORT`; existing direct TLS links continue to use the backend certificate.
+
+| Setting | Meaning |
+|---|---|
+| `PUBLIC_URL` | Public origin, independent of hosting provider; recommended behind a proxy |
+| `PUBLIC_PORT` | Override the external client port |
+| `PUBLIC_TLS` | `true` for a frontend with a trusted public TLS certificate, `false` for plain HTTP |
+| `LINK_PORT` / `LINK_TLS` | Existing aliases; override `PUBLIC_PORT` / `PUBLIC_TLS` |
+| `TRUST_PROXY` | Set to `true` to derive scheme and port from `X-Forwarded-Proto`, `X-Forwarded-Port` and the forwarded Host when no public URL is configured |
+
+Endpoint priority: explicit link overrides, explicit public URL (also accepts existing `PUBLIC_BASE_URL` / `SUB_BASE_URL`), trusted request headers, existing platform detection, then the direct listening port. `PUBLIC_URL` supplies the hostname; `FORCE_HOST` can override the connection address while retaining the configured domain for TLS SNI. Set `PUBLIC_URL` on deployments where startup-generated links must also match a reverse proxy; request headers are only available during panel/subscription requests.
+
+Enable `TRUST_PROXY` only when the app is reached through a frontend that overwrites forwarded headers. See [Express proxy guidance](https://expressjs.com/en/guide/behind-proxies/). It is optional when using `PUBLIC_URL`.
+
+These settings make endpoint generation portable. The hosting service must still support persistent WebSocket connections and the requested transport; HTTP-only hosts cannot expose raw TCP or UDP protocols through an HTTPS URL. Refresh subscriptions after changing the public endpoint.

@@ -24,7 +24,7 @@ const BK_CONFIG = {
   panelToken: process.env.PANEL_TOKEN || "",
   domain: process.env.DOMAIN || process.env.RAILWAY_PUBLIC_DOMAIN || "",
   forceHost: process.env.FORCE_HOST || "",
-  publicBaseUrl: process.env.PUBLIC_BASE_URL || process.env.SUB_BASE_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : ""),
+  publicBaseUrl: process.env.PUBLIC_URL || process.env.PUBLIC_BASE_URL || process.env.SUB_BASE_URL || "",
   subBase: process.env.SUB_BASE || "",
   forceHttps: process.env.FORCE_HTTPS === 'true' || !!process.env.RAILWAY_PUBLIC_DOMAIN || !!process.env.REPLIT_DEPLOYMENT,
   allowLocalHostLinks: false,
@@ -412,6 +412,47 @@ function normalizeHost(v) {
   if ((h.match(/:/g) || []).length === 1) h = h.split(':')[0];
   return h.toLowerCase();
 }
+/** Resolve the external endpoint independently from the application's listening port. */
+function bkPublicEndpoint(config, resolvedHost, request) {
+  const env = process.env;
+  const rawUrl = env.PUBLIC_URL || env.PUBLIC_BASE_URL || env.SUB_BASE_URL || config.publicBaseUrl || '';
+  let publicUrl = null;
+  if (rawUrl) {
+    try { publicUrl = new URL(rawUrl); } catch (_) { throw new Error('PUBLIC_URL must be a valid http:// or https:// URL'); }
+    if (!['http:', 'https:'].includes(publicUrl.protocol) || publicUrl.username || publicUrl.password) {
+      throw new Error('PUBLIC_URL must use HTTP or HTTPS and contain no credentials');
+    }
+    if (env.PUBLIC_URL && (publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash)) {
+      throw new Error('PUBLIC_URL must be an origin without a path, query or fragment');
+    }
+  }
+  const host = normalizeHost(config.forceHost || (publicUrl && publicUrl.hostname) || resolvedHost || config.domain || '127.0.0.1');
+  const trusted = /^(true|1)$/i.test(env.TRUST_PROXY || '');
+  const first = (v) => String(v || '').split(',')[0].trim();
+  const headers = request && request.headers || {};
+  const forwardedProto = trusted ? first(headers['x-forwarded-proto']).toLowerCase() : '';
+  const proto = ['http', 'https'].includes(forwardedProto) ? forwardedProto : '';
+  const forwardedHost = trusted ? first(headers['x-forwarded-host'] || headers.host) : '';
+  let requestPort = '';
+  if (proto === 'https' || proto === 'http') {
+    try { requestPort = new URL(proto + '://' + forwardedHost).port; } catch (_) {}
+    requestPort = first(headers['x-forwarded-port']) || requestPort;
+  }
+  const tlsFlag = env.LINK_TLS !== undefined ? env.LINK_TLS : env.PUBLIC_TLS;
+  if (tlsFlag !== undefined && !/^(true|false|1|0)$/i.test(tlsFlag)) throw new Error('LINK_TLS / PUBLIC_TLS must be true or false');
+  const knownEdge = bkOnEdgeHost() || /(^|\.)cleverapps\.io$/i.test(host);
+  const edgeTls = tlsFlag !== undefined ? /^(true|1)$/i.test(tlsFlag)
+    : publicUrl ? publicUrl.protocol === 'https:' : proto ? proto === 'https' : knownEdge;
+  const portValue = env.LINK_PORT || env.PUBLIC_PORT || (publicUrl ? publicUrl.port || (publicUrl.protocol === 'https:' ? 443 : 80)
+    : requestPort || (edgeTls ? 443 : proto === 'http' ? 80 : config.publicPort));
+  if (!/^\d+$/.test(String(portValue)) || Number(portValue) < 1 || Number(portValue) > 65535) {
+    throw new Error('Public link port must be an integer between 1 and 65535');
+  }
+  const port = Number(portValue);
+  const scheme = edgeTls ? 'https' : 'http';
+  const origin = scheme + '://' + host + ((scheme === 'https' && port === 443) || (scheme === 'http' && port === 80) ? '' : ':' + port);
+  return { host, port, edgeTls, origin };
+}
 function isIpLiteral(h) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':') || h.startsWith('[');
 }
@@ -583,6 +624,7 @@ function buildConfig(userOverrides = {}) {
       cfg.publicPort = parsedPort;
     }
   }
+  if (env.PUBLIC_URL || env.PUBLIC_BASE_URL || env.SUB_BASE_URL) cfg.publicBaseUrl = env.PUBLIC_URL || env.PUBLIC_BASE_URL || env.SUB_BASE_URL;
   if (env.UUID || env.SB_UUID) cfg.uuid = env.UUID || env.SB_UUID;
   if (env.DOMAIN || env.SB_DOMAIN) cfg.domain = env.DOMAIN || env.SB_DOMAIN;
   if (env.FORCE_HOST || env.CFIP) cfg.forceHost = env.FORCE_HOST || env.CFIP;
@@ -648,6 +690,9 @@ function buildConfig(userOverrides = {}) {
   // Replit: REPLIT_DOMAINS (published app only). Railway: RAILWAY_PUBLIC_DOMAIN.
   cfg.domain = normalizeHost(cfg.domain) || bkReplitDomain() || normalizeHost(env.RAILWAY_PUBLIC_DOMAIN) || normalizeHost(env.RAILWAY_STATIC_URL) || '';
   cfg.forceHost = normalizeHost(cfg.forceHost) || '';
+
+  if (env.PUBLIC_URL) cfg.domain = normalizeHost(env.PUBLIC_URL);
+  bkPublicEndpoint(cfg, cfg.domain); // Fail before downloading or starting cores on invalid endpoint settings.
 
   // Data paths
   const dataDir = resolveDataDir(cfg.dataDirHint);
@@ -2226,21 +2271,15 @@ function deriveX25519PublicKey(privBase64) {
 }
 
 class LinkGenerator {
-  constructor(config, state, resolvedHost) {
+  constructor(config, state, resolvedHost, request = null) {
     this.config = config;
     this.state = state;
-    this.host = config.forceHost || resolvedHost || config.domain || '127.0.0.1';
-    // BK_FIX2_APPLIED
-    const onEdge = bkOnEdgeHost() || /(^|\.)cleverapps\.io$/i.test(normalizeHost(this.host));
-    this.port = parseInt(process.env.LINK_PORT || '', 10) || (onEdge ? 443 : config.publicPort);
-    // Railway's edge only accepts HTTPS on 443 and forwards plain HTTP to $PORT, so on Railway every
-    // WS/HTTPUpgrade link is TLS (edge-side) and plain "security=none" links are not generated.
-    // LINK_TLS=true|false overrides the detection.
-    this.edgeTls = process.env.LINK_TLS !== undefined
-      ? (process.env.LINK_TLS === 'true' || process.env.LINK_TLS === '1')
-      : (onEdge && this.port === 443);
-    // Railway's edge serves a valid public certificate: never ask clients to skip verification there
-    // (Xray-core >= 26.x removed allowInsecure; links carrying it can fail to load in new clients).
+    const endpoint = bkPublicEndpoint(config, resolvedHost, request);
+    this.host = endpoint.host;
+    this.port = endpoint.port;
+    this.edgeTls = endpoint.edgeTls;
+    this.publicOrigin = endpoint.origin;
+    // Public TLS edges use their own trusted certificate, not the backend self-signed pin.
     this.insecure = !this.edgeTls;
     this.tlsOpt = LinkGenerator.tlsOptions((config.forceHost && config.domain) ? config.domain : this.host);
     this.prefix = config.nodePrefix || 'BK-';
@@ -3718,6 +3757,7 @@ function createHttpPanel(config, stateManager, engineStatusGetter, resolvedHostG
   // Helper to get active host for request
   const getRequestHost = (req) => {
     if (config.forceHost) return config.forceHost;
+    if (process.env.PUBLIC_URL) return normalizeHost(process.env.PUBLIC_URL);
     // An explicit DOMAIN variable always wins; otherwise the host the visitor used (e.g. an attached custom
     // domain) beats the auto-injected RAILWAY_PUBLIC_DOMAIN, so custom domains work with zero variables.
     if (config.domain && normalizeHost(process.env.DOMAIN || process.env.SB_DOMAIN || '')) return config.domain;
@@ -3777,7 +3817,7 @@ function createHttpPanel(config, stateManager, engineStatusGetter, resolvedHostG
   app.get('/health', authMiddleware, async (req, res) => {
     const engines = engineStatusGetter ? engineStatusGetter() : {};
     const host = getRequestHost(req);
-    const linkGen = new LinkGenerator(config, stateManager.state, host);
+    const linkGen = new LinkGenerator(config, stateManager.state, host, req);
     const allNodes = linkGen.getAllNodes({ compat: 'full', allowLocalHostLinks: true });
     const location = await resolveLocation(host);
 
@@ -3791,10 +3831,10 @@ function createHttpPanel(config, stateManager, engineStatusGetter, resolvedHostG
       host,
       domain: (host && !isIpLiteral(host)) ? host : (config.domain || ''),
       forceHost: config.forceHost || '',
-      publicBaseUrl: (process.env.PUBLIC_BASE_URL || process.env.SUB_BASE_URL) ? (config.publicBaseUrl || '')
-        : ((host && !isIpLiteral(host) && linkGen.edgeTls) ? 'https://' + host : (config.publicBaseUrl || '')),
+      publicBaseUrl: !process.env.PUBLIC_URL && (process.env.PUBLIC_BASE_URL || process.env.SUB_BASE_URL)
+        ? config.publicBaseUrl : linkGen.publicOrigin,
       subBase: config.subBase || '',
-      forceHttps: Boolean(config.forceHttps),
+      forceHttps: linkGen.edgeTls || Boolean(config.forceHttps),
       location: location || 'Global Server',
       engines,
       nodes: allNodes.map(node => ({
@@ -3880,7 +3920,7 @@ function createHttpPanel(config, stateManager, engineStatusGetter, resolvedHostG
     const compatMode = req.query.compat || 'v2ray'; // Default to strict v2ray compatibility
     const host = getRequestHost(req);
 
-    const linkGen = new LinkGenerator(config, stateManager.state, host);
+    const linkGen = new LinkGenerator(config, stateManager.state, host, req);
     const allowLocal = Boolean(config.allowLocalHostLinks || host === '127.0.0.1' || host === 'localhost');
     const nodes = linkGen.getAllNodes({
       compat: compatMode,
@@ -3907,7 +3947,7 @@ function createHttpPanel(config, stateManager, engineStatusGetter, resolvedHostG
   // Subscriptions: Clash Meta (Mihomo)
   app.get([`/${panelPath}/clash`, `/${panelPath}/clash.yaml`, '/clash'], authMiddleware, (req, res) => {
     const host = getRequestHost(req);
-    const linkGen = new LinkGenerator(config, stateManager.state, host);
+    const linkGen = new LinkGenerator(config, stateManager.state, host, req);
     const nodes = linkGen.getAllNodes({ compat: 'full', allowLocalHostLinks: true });
     const yaml = linkGen.buildClashMetaYaml(nodes);
 
@@ -3922,7 +3962,7 @@ function createHttpPanel(config, stateManager, engineStatusGetter, resolvedHostG
   app.get([`/${panelPath}/sb/raw`, `/${panelPath}/sb/base64`, `/${panelPath}/sb`, '/sb'], authMiddleware, (req, res) => {
     const isBase64 = req.path.endsWith('/base64');
     const host = getRequestHost(req);
-    const linkGen = new LinkGenerator(config, stateManager.state, host);
+    const linkGen = new LinkGenerator(config, stateManager.state, host, req);
     const nodes = linkGen.getAllNodes({ compat: 'full', allowLocalHostLinks: true });
     const jsonStr = linkGen.buildSingBoxClientJson(nodes);
 
@@ -3953,7 +3993,7 @@ function createHttpPanel(config, stateManager, engineStatusGetter, resolvedHostG
   app.get([`/${panelPath}/wg.conf`, `/${panelPath}/wireguard.conf`, '/wg.conf'], authMiddleware, (req, res) => {
     try {
       const host = getRequestHost(req);
-      const linkGen = new LinkGenerator(config, stateManager.state, host);
+      const linkGen = new LinkGenerator(config, stateManager.state, host, req);
       let wgNode = null;
       try {
         wgNode = linkGen.generateWireGuard();
@@ -4644,9 +4684,7 @@ async function startGate(userConfig = {}) {
   await tcpRouter.start();
 
   // 10. Summary
-  const panelUrl = (config.forceHttps || bkOnEdgeHost()) && !isIpLiteral(resolvedHost)
-    ? `https://${resolvedHost}/${config.panelPath}`
-    : `http://${resolvedHost}:${config.publicPort}/${config.panelPath}`;
+  const panelUrl = `${linkGen.publicOrigin}/${config.panelPath}`;
   Logger.item('Link host / SNI', `${linkGen.host} / ${linkGen.tlsOpt.sni} (port ${linkGen.port}, fp=${linkGen.tlsOpt.fp || 'none'}, alpn=${linkGen.tlsOpt.alpn.join(',') || 'none'})`);
   Logger.section('Blue Knight Gate Active');
   Logger.item('Host', bkPlatformName());
