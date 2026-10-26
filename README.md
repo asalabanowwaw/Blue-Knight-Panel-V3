@@ -69,3 +69,20 @@ Turn a config off by setting its variable to `false`, then restart the server.
 
 ---
 Made by **Blue Knight** · [Telegram](https://t.me/BlueKnight_Net) · [YouTube](https://www.youtube.com/@BlueKnight-Net)
+
+
+## Clever Cloud deployment
+
+Clever Cloud terminates HTTPS at its public edge on **443** and forwards HTTP to the app's internal **8080** listener. The app now detects Clever Cloud's injected metadata, or a `*.cleverapps.io` link hostname, and generates TLS links on 443. It omits the backend self-signed certificate pin and enables normal public certificate verification. The internal listener remains on `PORT` (8080 by default).
+
+1. Deploy this repository as a Node.js app with `npm start`.
+2. Set `DOMAIN` to your public hostname without a scheme, path or port. Keep `UUID`, `PANEL_PASSWORD` and `SUB_TOKEN` fixed in environment variables to preserve credentials across redeployments.
+3. Remove old `LINK_PORT=8080` or `LINK_TLS=false` overrides. You can explicitly set `LINK_PORT=443` and `LINK_TLS=true` for a custom edge frontend.
+4. Redeploy, then refresh the subscription or delete and re-import old configs. Previously exported links do not update automatically.
+5. Test the WS-TLS nodes first using your client's URL/real-delay test. Plain WS and direct gRPC nodes are omitted on detected HTTP edge hosts. HTTPUpgrade and XHTTP depend on the frontend forwarding those transports; use WS-TLS as the baseline.
+
+If the public domain returns HTTP 451 with "This application has been deactivated", resolve the application status with Clever Cloud support. Changing proxy settings cannot restore a deactivated app.
+
+References: [Clever Cloud request routing](https://www.clever.cloud/developers/doc/find-help/faq/) and [injected environment variables](https://www.clever.cloud/developers/doc/develop/common-configuration/environment-variables/reference/).
+
+Run regression tests with `npm test`.

@@ -388,9 +388,13 @@ function bkOnReplit() {
 function bkOnRailway() {
   return !!(process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_SERVICE_ID || process.env.RAILWAY_PUBLIC_DOMAIN);
 }
-/** Replit / Railway: public edge terminates TLS on 443 and forwards plain HTTP to PORT. */
-function bkOnEdgeHost() { return bkOnReplit() || bkOnRailway(); }
-function bkPlatformName() { return bkOnReplit() ? 'Replit' : (bkOnRailway() ? 'Railway' : 'Self-hosted'); }
+/** Clever Cloud injects APP_ID and CC_* instance metadata. */
+function bkOnCleverCloud() {
+  return !!(process.env.CC_DEPLOYMENT_ID || process.env.CC_REVERSE_PROXY_IPS || process.env.CC_APP_NAME || process.env.CC_PRETTY_INSTANCE_NAME);
+}
+/** Public edges terminate TLS on 443 and forward plain HTTP to PORT. */
+function bkOnEdgeHost() { return bkOnReplit() || bkOnRailway() || bkOnCleverCloud(); }
+function bkPlatformName() { return bkOnReplit() ? 'Replit' : (bkOnRailway() ? 'Railway' : (bkOnCleverCloud() ? 'Clever Cloud' : 'Self-hosted')); }
 /** Published Replit app domain from REPLIT_DOMAINS (custom domain first, then *.replit.app; never the private *.replit.dev). */
 function bkReplitDomain() {
   if (!process.env.REPLIT_DEPLOYMENT) return '';
@@ -398,7 +402,7 @@ function bkReplitDomain() {
   return list.find((d) => !d.endsWith('.replit.app') && !d.endsWith('.replit.dev')) || list.find((d) => d.endsWith('.replit.app')) || '';
 }
 /** Platform default hostnames: a relay / custom domain the visitor used beats these. */
-function bkIsPlatformHost(h) { return /(^|\.)(up\.railway\.app|replit\.app|replit\.dev)$/.test(String(h || '')); }
+function bkIsPlatformHost(h) { return /(^|\.)(up\.railway\.app|replit\.app|replit\.dev|cleverapps\.io)$/.test(String(h || '')); }
 /** Normalize "https://Name.example.com:443/path" -> "name.example.com" (IPv6 literals kept). */
 function normalizeHost(v) {
   let h = String(v || '').trim();
@@ -2227,14 +2231,14 @@ class LinkGenerator {
     this.state = state;
     this.host = config.forceHost || resolvedHost || config.domain || '127.0.0.1';
     // BK_FIX2_APPLIED
-    const bkOnRailway = bkOnEdgeHost(); // Replit or Railway: only HTTPS on 443 is public
-    this.port = parseInt(process.env.LINK_PORT || '', 10) || (bkOnRailway ? 443 : config.publicPort);
+    const onEdge = bkOnEdgeHost() || /(^|\.)cleverapps\.io$/i.test(normalizeHost(this.host));
+    this.port = parseInt(process.env.LINK_PORT || '', 10) || (onEdge ? 443 : config.publicPort);
     // Railway's edge only accepts HTTPS on 443 and forwards plain HTTP to $PORT, so on Railway every
     // WS/HTTPUpgrade link is TLS (edge-side) and plain "security=none" links are not generated.
     // LINK_TLS=true|false overrides the detection.
     this.edgeTls = process.env.LINK_TLS !== undefined
       ? (process.env.LINK_TLS === 'true' || process.env.LINK_TLS === '1')
-      : (bkOnRailway && this.port === 443);
+      : (onEdge && this.port === 443);
     // Railway's edge serves a valid public certificate: never ask clients to skip verification there
     // (Xray-core >= 26.x removed allowInsecure; links carrying it can fail to load in new clients).
     this.insecure = !this.edgeTls;
