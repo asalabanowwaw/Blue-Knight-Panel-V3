@@ -3,8 +3,8 @@
 A VLESS / VMess / Trojan / Shadowsocks / XHTTP panel that runs on **Free Hosts** (Pterodactyl) using the **one port** your server is given.
 
 ## Follow Blue Knight
-- 📢 Telegram: [@BlueKnight_Net](https://t.me/BlueKnight_Net)
-- ▶️ YouTube: [@BlueKnight-Net](https://www.youtube.com/@BlueKnight-Net)
+- ًں“¢ Telegram: [@BlueKnight_Net](https://t.me/BlueKnight_Net)
+- â–¶ï¸ڈ YouTube: [@BlueKnight-Net](https://www.youtube.com/@BlueKnight-Net)
 
 
 ## Setup on Free Hosts
@@ -29,7 +29,7 @@ A VLESS / VMess / Trojan / Shadowsocks / XHTTP panel that runs on **Free Hosts**
 | Shadowsocks-WS | Xray, sing-box, Clash Meta (v2ray-plugin websocket) |
 | VLESS-XHTTP | **Xray clients only** (v2rayN, v2rayNG, Hiddify with the Xray core) |
 
-Every config is named `💞t.me/BlueKnight_Net - <type>` and is included in:
+Every config is named `ًں’‍t.me/BlueKnight_Net - <type>` and is included in:
 - the normal base64 subscription
 - the "full" subscription
 - the Clash file
@@ -40,15 +40,15 @@ Every config is named `💞t.me/BlueKnight_Net - <type>` and is included in:
 - Links carry `allowInsecure=1` for older clients and `pcs=<sha256>` (a certificate pin) for Xray 26.2+.
 - The certificate renews itself before it expires. When that happens, re-import the subscription.
 
-## Settings (Startup → Variables, or `.env`)
+## Settings (Startup â†’ Variables, or `.env`)
 All are optional.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `UUID` | random, saved in `bk-data` | Fixed UUID for all configs |
-| `PANEL_PASSWORD` | – | Fixed panel password (8+ characters) |
+| `PANEL_PASSWORD` | â€“ | Fixed panel password (8+ characters) |
 | `SUB_TOKEN` | random | Fixed subscription token |
-| `SETUP_KEY` | – | Extra key required the first time you create the password |
+| `SETUP_KEY` | â€“ | Extra key required the first time you create the password |
 | `DOMAIN` | server IP | Domain or host used in links |
 | `ENABLE_TROJAN_WS_TLS` | `true` | Trojan-WS-TLS |
 | `ENABLE_VMESS_HTTPUPGRADE` / `ENABLE_TROJAN_HTTPUPGRADE` | `true` | HTTPUpgrade configs |
@@ -68,7 +68,7 @@ Turn a config off by setting its variable to `false`, then restart the server.
 - **Keep the subscription URL private.** It contains your token.
 
 ---
-Made by **Blue Knight** · [Telegram](https://t.me/BlueKnight_Net) · [YouTube](https://www.youtube.com/@BlueKnight-Net)
+Made by **Blue Knight** آ· [Telegram](https://t.me/BlueKnight_Net) آ· [YouTube](https://www.youtube.com/@BlueKnight-Net)
 
 
 ## Clever Cloud deployment
@@ -114,3 +114,17 @@ Endpoint priority: explicit link overrides, explicit public URL (also accepts ex
 Enable `TRUST_PROXY` only when the app is reached through a frontend that overwrites forwarded headers. See [Express proxy guidance](https://expressjs.com/en/guide/behind-proxies/). It is optional when using `PUBLIC_URL`.
 
 These settings make endpoint generation portable. The hosting service must still support persistent WebSocket connections and the requested transport; HTTP-only hosts cannot expose raw TCP or UDP protocols through an HTTPS URL. Refresh subscriptions after changing the public endpoint.
+
+
+### Container exits with `listen EACCES` on port 80 or 443
+
+The process cannot bind that internal port with its current permissions. Run Node on an unprivileged port and route the public frontend to it:
+
+```dotenv
+PORT=8080
+PUBLIC_URL=https://your-actual-app-domain
+```
+
+If the hosting service injects `PORT` and allows you to configure its container target port, use `LISTEN_PORT=8080` and set that target/health-check port to `8080`. If the platform requires a particular `PORT`, follow its routing settings rather than overriding it. Internal bind priority is `LISTEN_PORT`, then `PORT`, `SERVER_PORT`, `SB_PORT`, then the configured/default 8080. `PUBLIC_PORT` only changes client configs.
+
+For Docker, map frontend ports to the internal listener (for example `-p 80:8080` for HTTP); HTTPS requires a TLS frontend. Do not set the Node listener to 80 just because users connect to public port 80. Replace all example hostnames with your real application URL. The npm update notice is informational; the `EACCES` line is the startup failure.

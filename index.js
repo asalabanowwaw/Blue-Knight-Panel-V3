@@ -17,7 +17,7 @@ const BK_CONFIG = {
   channelUrl: "https://t.me/BlueKnight_Net",
   sponsorName: "WhiteDNS",
   sponsorUrl: "https://t.me/whitedns",
-  publicPort: parseInt(process.env.PORT || process.env.SERVER_PORT || '8080', 10) || 8080,
+  publicPort: bkListenSettings().port,
   panelPath: "knight",
   dataDirHint: "/data",
   uuid: "",
@@ -412,6 +412,26 @@ function normalizeHost(v) {
   if ((h.match(/:/g) || []).length === 1) h = h.split(':')[0];
   return h.toLowerCase();
 }
+/** LISTEN_PORT is an explicit bind override; public endpoint settings never change the listener. */
+function bkListenSettings(fallback = 8080) {
+  const env = process.env;
+  const source = ['LISTEN_PORT', 'PORT', 'SERVER_PORT', 'SB_PORT'].find(key => env[key] !== undefined && env[key] !== '');
+  const value = source ? env[source] : fallback;
+  if (!/^\d+$/.test(String(value)) || Number(value) < 1 || Number(value) > 65535) {
+    throw new Error((source || 'Listening port') + ' must be an integer between 1 and 65535');
+  }
+  return { port: Number(value), source: source || 'configuration/default' };
+}
+function bkListenError(error, port) {
+  if (error.code !== 'EACCES') return error;
+  const denied = new Error('Cannot bind internal listening port ' + port + ' (EACCES). ' +
+    'Use an unprivileged internal port such as LISTEN_PORT=8080 and configure the host/container target port to match. ' +
+    'Keep PUBLIC_URL set to your actual public address (for example https://your-app-domain). ' +
+    'Public ports 80/443 belong to the frontend; they do not require Node to bind 80/443.');
+  denied.code = error.code;
+  denied.cause = error;
+  return denied;
+}
 /** Resolve the external endpoint independently from the application's listening port. */
 function bkPublicEndpoint(config, resolvedHost, request) {
   const env = process.env;
@@ -484,7 +504,7 @@ const DEFAULT_CONFIG = {
   tagline: 'One port. Many paths. Blue Knight Net.',
   sponsorUrl: 'https://t.me/whitedns',
   sponsorName: 'WhiteDNS',
-  publicPort: parseInt(process.env.PORT || process.env.SERVER_PORT || '8080', 10) || 8080,
+  publicPort: bkListenSettings().port,
   panelPath: 'knight',
   dataDirHint: '/data',
   uuid: '',
@@ -618,12 +638,9 @@ function buildConfig(userOverrides = {}) {
   const env = process.env;
   const parseBool = (v, defaultVal) => (v !== undefined ? v === '1' || v === 'true' : defaultVal);
 
-  if (env.PORT || env.SERVER_PORT || env.SB_PORT) {
-    const parsedPort = parseInt(env.PORT || env.SERVER_PORT || env.SB_PORT, 10);
-    if (!isNaN(parsedPort) && parsedPort > 0) {
-      cfg.publicPort = parsedPort;
-    }
-  }
+  const listen = bkListenSettings(cfg.publicPort);
+  cfg.publicPort = listen.port;
+  cfg.listenPortSource = listen.source;
   if (env.PUBLIC_URL || env.PUBLIC_BASE_URL || env.SUB_BASE_URL) cfg.publicBaseUrl = env.PUBLIC_URL || env.PUBLIC_BASE_URL || env.SUB_BASE_URL;
   if (env.UUID || env.SB_UUID) cfg.uuid = env.UUID || env.SB_UUID;
   if (env.DOMAIN || env.SB_DOMAIN) cfg.domain = env.DOMAIN || env.SB_DOMAIN;
@@ -4498,7 +4515,7 @@ class TcpRouter {
         Logger.success(`Public TCP multiplexer listening on 0.0.0.0:${this.config.publicPort}`);
         resolve(this.server);
       });
-      this.server.on('error', reject);
+      this.server.on('error', error => reject(bkListenError(error, this.config.publicPort)));
     });
   }
 
@@ -4566,7 +4583,13 @@ async function startGate(userConfig = {}) {
   // 2. Build configuration
   const config = buildConfig(userConfig);
   Logger.section('Configuration');
-  Logger.item('Public Port', config.publicPort);
+  Logger.item('Internal listen port', `${config.publicPort} (${config.listenPortSource})`);
+  if (process.env.LISTEN_PORT && process.env.PORT && process.env.LISTEN_PORT !== process.env.PORT) {
+    Logger.warn('LISTEN_PORT overrides the host-provided PORT. Configure the hosting target/health-check port to match LISTEN_PORT.');
+  }
+  if (normalizeHost(config.publicBaseUrl) === 'proxy.example.com') {
+    Logger.warn('PUBLIC_URL still uses the example hostname proxy.example.com; replace it with your actual public app URL.');
+  }
   Logger.item('Panel Path', `/${config.panelPath}`);
   Logger.item('Data Directory', config.paths.dataDir);
   {

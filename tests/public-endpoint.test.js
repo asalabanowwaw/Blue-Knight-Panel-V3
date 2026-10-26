@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../index.js'), 'utf8');
 function load(env = {}) {
   const sandbox = { require, module: { exports: {} }, process: { env, platform: process.platform }, console, Buffer, URL, URLSearchParams, setInterval, clearInterval, setTimeout, clearTimeout, __dirname: require('node:path').resolve(__dirname, '..') };
-  vm.runInNewContext(source + '\nmodule.exports.testing = { LinkGenerator, bkOnEdgeHost, bkPlatformName, bkIsPlatformHost, bkPublicEndpoint };', sandbox);
+  vm.runInNewContext(source + '\nmodule.exports.testing = { LinkGenerator, bkOnEdgeHost, bkPlatformName, bkIsPlatformHost, bkPublicEndpoint, bkListenSettings, bkListenError };', sandbox);
   return sandbox.module.exports;
 }
 function generator(env, host = 'app-example.cleverapps.io') {
@@ -145,4 +145,26 @@ test('Railway custom request domains are not replaced with the generated hostnam
   assert.equal(gen.host, 'custom.example.com');
   assert.equal(gen.port, 443);
   assert.equal(gen.edgeTls, true);
+});
+
+test('internal bind port stays separate from external port and supports host overrides', () => {
+  const app = load({ PORT: '80', LISTEN_PORT: '8080', PUBLIC_URL: 'https://proxy.example.com' });
+  assert.equal(app.BK_CONFIG.publicPort, 8080);
+  assert.equal(app.testing.bkListenSettings().source, 'LISTEN_PORT');
+  const gen = new app.testing.LinkGenerator(app.BK_CONFIG, {}, 'proxy.example.com');
+  assert.equal(gen.port, 443);
+  assert.equal(load({ PORT: '9000', SERVER_PORT: '8080' }).BK_CONFIG.publicPort, 9000);
+  assert.equal(load({ SERVER_PORT: '8081' }).BK_CONFIG.publicPort, 8081);
+  assert.equal(load({ SB_PORT: '8082' }).BK_CONFIG.publicPort, 8082);
+  assert.throws(() => load({ LISTEN_PORT: '8080oops' }), /LISTEN_PORT must be an integer/);
+});
+test('permission-denied bind errors explain internal target port configuration', () => {
+  const app = load();
+  const original = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+  const error = app.testing.bkListenError(original, 80);
+  assert.match(error.message, /internal listening port 80/);
+  assert.match(error.message, /LISTEN_PORT=8080/);
+  assert.equal(error.cause, original);
+  const occupied = Object.assign(new Error('address in use'), { code: 'EADDRINUSE' });
+  assert.equal(app.testing.bkListenError(occupied, 8080), occupied);
 });
